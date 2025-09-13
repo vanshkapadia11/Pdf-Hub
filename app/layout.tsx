@@ -21,10 +21,28 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <script
+        async
+        src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
+        crossOrigin="anonymous"
+      ></script>
       <body className={` ${poppinsSans.className} antialiased`}>
         <LoadingBar />
         {children}
       </body>
     </html>
   );
+}
+
+// google.com, pub - 1052528326679360, DIRECT, f08c47fec0942fa0;
+{
+  /* <meta name="google-adsense-account" content="ca-pub-1052528326679360"></meta> */
+}
+
+{
+  /* <script
+  async
+  src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
+  crossorigin="anonymous"
+></script>; */
 }

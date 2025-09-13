@@ -294,25 +294,39 @@ export default function PDFMerger() {
 
           {/* Conditional Rendering based on files and downloadUrl state */}
           {!files.length || downloadUrl ? (
-            <div
-              className={cn(
-                "w-full max-w-2xl h-48 border-2 rounded-lg flex flex-col items-center justify-center transition-colors cursor-pointer",
-                dragActive
-                  ? "border-blue-500 text-blue-500 border-dashed"
-                  : "border-gray-400 text-gray-500 hover:border-blue-500 hover:text-blue-500 border-dashed"
-              )}
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <p className="text-sm font-semibold uppercase">
-                Click to select or drag & drop PDF files here
-              </p>
-              <p className="text-xs font-semibold uppercase mt-2 text-zinc-600">
-                Select at least 2 PDF files.
-              </p>
-            </div>
+            <>
+              <div
+                className={cn(
+                  "w-full max-w-2xl h-48 border-2 rounded-lg flex flex-col items-center justify-center transition-colors cursor-pointer mb-20",
+                  dragActive
+                    ? "border-blue-500 text-blue-500 border-dashed"
+                    : "border-gray-400 text-gray-500 hover:border-blue-500 hover:text-blue-500 border-dashed"
+                )}
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <p className="text-sm font-semibold uppercase">
+                  Click to select or drag & drop PDF files here
+                </p>
+                <p className="text-xs font-semibold uppercase mt-2 text-zinc-600">
+                  Select at least 2 PDF files.
+                </p>
+              </div>
+              {/* <section className="w-full max-w-2xl rounded-sm ring-2 ring-inset ring-[#e8e8e8] flex flex-col items-center">
+                <h2 className="text-sm font-semibold uppercase">
+                  Advertisment:{" "}
+                </h2>
+                <div className="">
+                  <script
+                    async
+                    src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
+                    crossOrigin="anonymous"
+                  ></script>
+                </div>
+              </section> */}
+            </>
           ) : (
             <div className="w-full max-w-2xl mt-8 p-6 rounded-xl bg-white shadow-lg border border-gray-200 space-y-6">
               {/* File List */}
