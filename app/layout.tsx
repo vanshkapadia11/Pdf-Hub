@@ -11,7 +11,7 @@ const poppinsSans = Poppins({
 
 export const metadata: Metadata = {
   title: "PDF Hub",
-  description: "A One Stop Place For All Your PDF Work!",
+  description: "A One Stop Place For All Your PDF Work! ",
 };
 
 export default function RootLayout({
@@ -26,6 +26,7 @@ export default function RootLayout({
         src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
         crossOrigin="anonymous"
       ></script>
+
       <body className={` ${poppinsSans.className} antialiased`}>
         <LoadingBar />
         {children}
