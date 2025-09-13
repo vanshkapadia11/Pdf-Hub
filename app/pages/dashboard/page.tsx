@@ -209,7 +209,7 @@ const LandingPage = () => {
       <div className="min-h-screen bg-gray-50 bg-dots-pattern">
         <main className="flex-1 flex flex-col items-center justify-center p-4 md:p-8">
           {/* Hero Section with Parallax Background */}
-          <div className="relative w-full h-[600px] flex items-center justify-center overflow-hidden">
+          <div className="relative w-full h-[600px] flex items-center justify-center overflow-hidden sfsfsdfsdfsdfsdfsd">
             {/* Parallax Icons in Background */}
             <div className="absolute inset-0 w-full h-full" ref={scope}>
               <Floating>
