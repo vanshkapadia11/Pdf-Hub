@@ -172,7 +172,7 @@ export default function MoreToolsSidebar({
         <ul className="space-y-2">
           {randomizedTools.map((tool, index) => (
             <li key={index}>
-              <Link href={`/pages/${tool.href}`} passHref legacyBehavior>
+              <Link href={`${tool.href}`} passHref legacyBehavior>
                 <a className="flex items-center gap-2 text-xs font-semibold uppercase text-gray-700 p-2 rounded-md bg-white shadow-sm hover:text-gray-800 hover:bg-gray-200 transition-colors">
                   {tool.icon && (
                     <span style={{ color: tool.color }}>

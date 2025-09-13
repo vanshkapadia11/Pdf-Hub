@@ -284,7 +284,7 @@ const LandingPage = () => {
                 name={tool.name}
                 description={tool.description}
                 icon={tool.icon}
-                href={`/pages${tool.href}`} // Fix: Removed extra "/pages" prefix
+                href={`${tool.href}`} // Fix: Removed extra "/pages" prefix
               />
             ))}
           </div>
