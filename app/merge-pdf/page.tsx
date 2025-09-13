@@ -314,7 +314,7 @@ export default function PDFMerger() {
                   Select at least 2 PDF files.
                 </p>
               </div>
-              {/* <section className="w-full max-w-2xl rounded-sm ring-2 ring-inset ring-[#e8e8e8] flex flex-col items-center">
+              <section className="w-full max-w-2xl rounded-sm ring-2 ring-inset ring-[#e8e8e8] flex flex-col items-center">
                 <h2 className="text-sm font-semibold uppercase">
                   Advertisment:{" "}
                 </h2>
@@ -324,8 +324,19 @@ export default function PDFMerger() {
                     src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
                     crossOrigin="anonymous"
                   ></script>
+                  <ins
+                    className="adsbygoogle"
+                    //  style="display:block"
+                    data-ad-client="ca-pub-1052528326679360"
+                    data-ad-slot="6348061437"
+                    data-ad-format="auto"
+                    data-full-width-responsive="true"
+                  ></ins>
+                  <script>
+                    (adsbygoogle = window.adsbygoogle || []).push({});
+                  </script>
                 </div>
-              </section> */}
+              </section>
             </>
           ) : (
             <div className="w-full max-w-2xl mt-8 p-6 rounded-xl bg-white shadow-lg border border-gray-200 space-y-6">
