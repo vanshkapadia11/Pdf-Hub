@@ -3,6 +3,7 @@ import { Poppins } from "next/font/google";
 import "./globals.css";
 import LoadingBar from "@/components/LoadingBar";
 import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const poppinsSans = Poppins({
   variable: "--font-poppins",
@@ -12,7 +13,7 @@ const poppinsSans = Poppins({
 
 export const metadata: Metadata = {
   title: "PDF Hub",
-  description: "A One Stop Place For All Your PDF Work! ",
+  description: "npm i @vercel/speed-insights ",
 };
 
 export default function RootLayout({
@@ -30,6 +31,8 @@ export default function RootLayout({
 
       <body className={` ${poppinsSans.className} antialiased`}>
         <LoadingBar />
+        <Analytics />
+        <SpeedInsights />
         {children}
       </body>
     </html>
