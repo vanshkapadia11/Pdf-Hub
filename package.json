@@ -41,6 +41,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tensorflow/tfjs": "^4.22.0",
+    "@vercel/analytics": "^1.5.0",
     "@vladmandic/face-api": "^1.7.15",
     "@vladmandic/human": "^3.3.5",
     "@xmldom/xmldom": "^0.8.11",

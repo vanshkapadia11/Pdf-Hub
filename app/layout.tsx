@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Poppins } from "next/font/google";
 import "./globals.css";
 import LoadingBar from "@/components/LoadingBar";
+import { Analytics } from "@vercel/analytics/next";
 
 const poppinsSans = Poppins({
   variable: "--font-poppins",
