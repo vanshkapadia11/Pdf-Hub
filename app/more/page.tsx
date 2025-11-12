@@ -31,6 +31,8 @@ import {
   FileX2Icon,
   FileDownIcon,
   FileCogIcon,
+  ParenthesesIcon,
+  GalleryHorizontalEnd,
 } from "lucide-react";
 
 import {
@@ -66,6 +68,8 @@ const iconMap = {
   removePages: <FileX2Icon className="h-10 w-10 text-red-500" />,
   extractPages: <FileSearchIcon className="h-10 w-10 text-cyan-600" />,
   organizePdf: <FileCogIcon className="h-10 w-10 text-orange-400" />,
+  passportMaker: <ParenthesesIcon className="h-10 w-10 text-rose-400" />,
+  kycCompressor: <GalleryHorizontalEnd className="h-10 w-10 text-rose-400" />,
 };
 
 const tools = [
@@ -99,6 +103,18 @@ const tools = [
     href: "/pdf-to-excel",
     description: "Turn your PDF tables into a Microsoft Excel spreadsheet.",
     icon: iconMap.pdfToExcel,
+  },
+  {
+    name: "Passport Size Photo Maker",
+    href: "/passport-size-photo-maker",
+    description: "Create and print passport-sized photos easily.",
+    icon: iconMap.passportMaker,
+  },
+  {
+    name: "kyc Image Compressor",
+    href: "/kyc-image-compressor",
+    description: "Compress and optimize KYC images for faster uploads.",
+    icon: iconMap.kycCompressor,
   },
   {
     name: "PDF to Images",

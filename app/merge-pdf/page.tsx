@@ -68,7 +68,7 @@ const SortableItem = ({ file, index, removeFile }: SortableItemProps) => {
       ref={setNodeRef}
       style={style}
       className={cn(
-        "flex items-center justify-between py-3 px-4 rounded-lg bg-gray-50 border border-gray-200 transition-colors duration-200",
+        "flex items-center flex-wrap justify-between py-3 w-full px-4 rounded-lg bg-gray-50 border border-gray-200 transition-colors duration-200",
         isDragging && "shadow-lg bg-white"
       )}
     >
@@ -79,9 +79,7 @@ const SortableItem = ({ file, index, removeFile }: SortableItemProps) => {
           {...listeners}
         />
         <FileIcon className="h-5 w-5 text-rose-500" />
-        <span className="text-sm text-gray-700 font-medium truncate">
-          {file.name}
-        </span>
+        <span className="text-sm text-gray-700 font-medium">{file.name}</span>
       </div>
       <Button
         variant="ghost"
@@ -357,7 +355,7 @@ export default function PDFMerger() {
                     items={files.map((file, index) => `${file.name}${index}`)}
                     strategy={verticalListSortingStrategy}
                   >
-                    <ul className="space-y-2 max-h-60 overflow-y-auto pr-2">
+                    <ul className="space-y-2 w-full flex flex-col max-h-60 pr-2">
                       {files.map((file, index) => (
                         <SortableItem
                           key={`${file.name}${index}`}

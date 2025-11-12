@@ -11,6 +11,7 @@ import {
   Text,
   Shredder,
   CornerDownLeft,
+  MarsStroke,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -33,11 +34,17 @@ const navLinks = [
     icon: MergeIcon,
     iconColor: "text-amber-400",
   },
+  // {
+  //   name: "make pdf",
+  //   href: "/images-to-pdf",
+  //   icon: Edit3Icon,
+  //   iconColor: "text-blue-400",
+  // },
   {
-    name: "make pdf",
+    name: "Passport Photo",
     href: "/images-to-pdf",
-    icon: Edit3Icon,
-    iconColor: "text-blue-400",
+    icon: MarsStroke,
+    iconColor: "text-orange-400",
   },
   {
     name: "resize image",

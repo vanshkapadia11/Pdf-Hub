@@ -24,6 +24,8 @@ import {
   FilePlus,
   Text,
   MoveHorizontal,
+  Parentheses,
+  GalleryHorizontalEnd,
 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -51,6 +53,23 @@ const tools = [
       <MergeIcon className="h-12 w-12 text-rose-500 group-hover:text-white transition-colors duration-300" />
     ),
     href: "/merge-pdf",
+  },
+  {
+    name: "Passport Size Photo Maker",
+    description: "Combine multiple PDF files into one single document.",
+    icon: (
+      <Parentheses className="h-12 w-12 text-rose-500 group-hover:text-white transition-colors duration-300" />
+    ),
+    href: "/passport-size-photo-maker",
+  },
+  {
+    name: "Kyc Image Compressor",
+    description:
+      "compress kyc images to reduce file size without losing quality.",
+    icon: (
+      <GalleryHorizontalEnd className="h-12 w-12 text-rose-500 group-hover:text-white transition-colors duration-300" />
+    ),
+    href: "/kyc-image-compressor",
   },
   {
     name: "Split PDF",
