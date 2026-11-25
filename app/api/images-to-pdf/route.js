@@ -1,93 +1,90 @@
-import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
-import fileType from "file-type"; // You'll need to install this library: npm install file-type
+import sharp from "sharp";
+import { badRequest, serverError, sniffImageType, binaryResponse, downloadName } from "@/lib/server/http";
 
-export async function POST(req) {
+export const runtime = "nodejs";
+
+// A4 in PDF points.
+const A4_SHORT = 595.28;
+const A4_LONG = 841.89;
+
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const files = formData.getAll("images");
+    const formData = await request.formData();
+    const files = formData.getAll("images").filter((f) => f instanceof File && f.size > 0);
 
-    if (!files || files.length === 0) {
-      return NextResponse.json(
-        { success: false, message: "No images uploaded." },
-        { status: 400 }
-      );
+    if (files.length === 0) {
+      return badRequest("Please select at least one image to convert.");
     }
 
     const pdfDoc = await PDFDocument.create();
+    pdfDoc.setProducer("PDF Hub");
+    pdfDoc.setCreator("PDF Hub");
+
+    let skipped = 0;
 
     for (const file of files) {
-      const imageBuffer = await file.arrayBuffer();
-      const imageBytes = new Uint8Array(imageBuffer);
+      try {
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const type = sniffImageType(buffer);
+        if (!type) {
+          skipped++;
+          continue;
+        }
 
-      // Validate the file type by its bytes, not just the file.type property
-      const type = await fileType.fromBuffer(imageBytes);
+        // pdf-lib can only embed JPEG/PNG directly; convert other formats
+        // (WebP, GIF, TIFF) to PNG first.
+        let embedded;
+        if (type.mime === "image/jpeg") {
+          embedded = await pdfDoc.embedJpg(buffer);
+        } else if (type.mime === "image/png") {
+          embedded = await pdfDoc.embedPng(buffer);
+        } else {
+          const pngBuffer = await sharp(buffer).png().toBuffer();
+          embedded = await pdfDoc.embedPng(pngBuffer);
+        }
 
-      if (!type || (type.mime !== "image/jpeg" && type.mime !== "image/png")) {
-        console.warn(
-          `Skipping unsupported file: ${file.name} with MIME type ${
-            type ? type.mime : "unknown"
-          }`
+        // Orient the page to match the image aspect ratio.
+        const isLandscape = embedded.width > embedded.height;
+        const pageWidth = isLandscape ? A4_LONG : A4_SHORT;
+        const pageHeight = isLandscape ? A4_SHORT : A4_LONG;
+
+        const page = pdfDoc.addPage([pageWidth, pageHeight]);
+        const margin = 24;
+        const scale = Math.min(
+          (pageWidth - margin * 2) / embedded.width,
+          (pageHeight - margin * 2) / embedded.height
         );
-        continue;
+        const drawWidth = embedded.width * scale;
+        const drawHeight = embedded.height * scale;
+
+        page.drawImage(embedded, {
+          x: (pageWidth - drawWidth) / 2,
+          y: (pageHeight - drawHeight) / 2,
+          width: drawWidth,
+          height: drawHeight,
+        });
+      } catch (error) {
+        console.error(`images-to-pdf: failed to embed ${file.name}:`, error.message);
+        skipped++;
       }
-
-      let embeddedImage;
-
-      if (type.mime === "image/jpeg") {
-        embeddedImage = await pdfDoc.embedJpg(imageBytes);
-      } else if (type.mime === "image/png") {
-        embeddedImage = await pdfDoc.embedPng(imageBytes);
-      }
-
-      // If the embedding fails for some reason (e.g., corrupt file), we can catch it here
-      if (!embeddedImage) {
-        console.error(`Failed to embed image: ${file.name}`);
-        continue;
-      }
-
-      const page = pdfDoc.addPage();
-      const { width, height } = page.getSize();
-      const { width: imgWidth, height: imgHeight } = embeddedImage;
-
-      // Calculate the aspect ratio to fit the image on the page
-      const scale = Math.min(width / imgWidth, height / imgHeight);
-      const scaledWidth = imgWidth * scale;
-      const scaledHeight = imgHeight * scale;
-
-      // Draw the image centered on the page
-      page.drawImage(embeddedImage, {
-        x: (width - scaledWidth) / 2,
-        y: (height - scaledHeight) / 2,
-        width: scaledWidth,
-        height: scaledHeight,
-      });
     }
 
-    // Check if any pages were added before saving
-    if (pdfDoc.getPages().length === 0) {
-      return NextResponse.json(
-        { success: false, message: "No valid images were converted to PDF." },
-        { status: 400 }
+    const pageCount = pdfDoc.getPageCount();
+    if (pageCount === 0) {
+      return badRequest(
+        "None of the selected files could be read as images. Supported formats: JPG, PNG, WebP, GIF and TIFF."
       );
     }
 
-    const pdfBytes = await pdfDoc.save();
-
-    const headers = new Headers();
-    headers.set("Content-Type", "application/pdf");
-    headers.set("Content-Disposition", `attachment; filename="converted.pdf"`);
-
-    return new Response(pdfBytes, { headers });
+    const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+    const response = binaryResponse(pdfBytes, "application/pdf", downloadName(files[0], "-converted", "pdf"));
+    if (skipped > 0) {
+      response.headers.set("X-Skipped-Files", String(skipped));
+    }
+    return response;
   } catch (error) {
-    console.error("Error converting images to PDF:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        message:
-          "Error converting images to PDF. Please ensure your images are valid.",
-      },
-      { status: 500 }
-    );
+    console.error("images-to-pdf error:", error);
+    return serverError();
   }
 }

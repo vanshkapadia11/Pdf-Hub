@@ -18,6 +18,8 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Vendored browser worker, minified upstream — not our code.
+      "public/pdf.worker.min.mjs",
     ],
   },
 ];

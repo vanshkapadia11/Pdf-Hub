@@ -1,59 +1,39 @@
-import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt, clampQuality } from "@/lib/server/http";
+import { loadImage, ImageError, encodeImage } from "@/lib/server/image";
 
-export async function POST(req) {
+export const runtime = "nodejs";
+
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("image");
-    const format = formData.get("format")?.toString().toLowerCase();
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "image", "image");
+    if (response) return response;
 
-    if (!file || !(file instanceof Blob)) {
-      return NextResponse.json({ error: "No image uploaded" }, { status: 400 });
+    const format = String(formData.get("format") || "").toLowerCase();
+    if (!["png", "jpg", "webp"].includes(format)) {
+      return badRequest("Invalid output format. Supported formats: PNG, JPG and WebP.");
     }
+    const quality = clampQuality(getInt(formData, "quality", 90));
 
-    if (!["png", "jpg", "jpeg", "webp"].includes(format)) {
-      return NextResponse.json(
-        { error: "Invalid output format" },
-        { status: 400 }
-      );
-    }
+    const buffer = Buffer.from(await file.arrayBuffer());
+    await loadImage(buffer);
 
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
+    // JPEG has no alpha channel: give transparent areas a white background
+    // instead of the black sharp would produce.
+    const prepared = format === "jpg"
+      ? await sharp(buffer).flatten({ background: "#ffffff" }).toBuffer()
+      : buffer;
 
-    let outputBuffer;
-    const image = sharp(inputBuffer);
-
-    switch (format) {
-      case "png":
-        outputBuffer = await image.png().toBuffer();
-        break;
-      case "jpg":
-      case "jpeg":
-        outputBuffer = await image.jpeg().toBuffer();
-        break;
-      case "webp":
-        outputBuffer = await image.webp().toBuffer();
-        break;
-      default:
-        return NextResponse.json(
-          { error: "Unsupported format" },
-          { status: 400 }
-        );
-    }
-
-    return new Response(outputBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": `image/${format === "jpg" ? "jpeg" : format}`,
-        "Content-Disposition": `attachment; filename=converted.${format}`,
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    return NextResponse.json(
-      { error: "Failed to convert image" },
-      { status: 500 }
+    const encoded = await encodeImage(prepared, format === "jpg" ? "jpeg" : format, quality);
+    return binaryResponse(
+      encoded.buffer,
+      encoded.mime,
+      downloadName(file, `-converted`, encoded.ext)
     );
+  } catch (error) {
+    if (error instanceof ImageError) return badRequest(error.message);
+    console.error("convert-image error:", error);
+    return serverError("Failed to convert this image.");
   }
 }

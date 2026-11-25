@@ -1,65 +1,47 @@
-import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt } from "@/lib/server/http";
+import { loadImage, ImageError, resolveOutputFormat, encodeImage } from "@/lib/server/image";
+
+export const runtime = "nodejs";
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const file = formData.get("image");
+    const { file, response } = validateUpload(formData, "image", "image");
+    if (response) return response;
 
-    const x = parseInt(formData.get("x"), 10);
-    const y = parseInt(formData.get("y"), 10);
-    const width = parseInt(formData.get("width"), 10);
-    const height = parseInt(formData.get("height"), 10);
-    const outputFormat = (formData.get("outputFormat") || "png").toLowerCase();
+    const x = getInt(formData, "x", -1);
+    const y = getInt(formData, "y", -1);
+    const width = getInt(formData, "width", 0);
+    const height = getInt(formData, "height", 0);
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "No image file provided." },
-        { status: 400 }
+    if ([x, y, width, height].some((v) => Number.isNaN(v)) || x < 0 || y < 0 || width <= 0 || height <= 0) {
+      return badRequest("Invalid crop area: x/y must be 0 or greater and width/height must be positive.");
+    }
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { metadata } = await loadImage(buffer);
+    const format = resolveOutputFormat(formData.get("outputFormat"), metadata.format);
+
+    // Reject crop areas that fall outside the image instead of silently
+    // shrinking them — the user asked for a specific rectangle.
+    if (x + width > metadata.width || y + height > metadata.height) {
+      return badRequest(
+        `The crop area (x: ${x}, y: ${y}, ${width}×${height}px) falls outside the ${metadata.width}×${metadata.height}px image.`
       );
     }
 
-    if ([x, y, width, height].some((v) => isNaN(v) || v < 0)) {
-      return NextResponse.json(
-        { error: "Invalid crop dimensions." },
-        { status: 400 }
-      );
-    }
+    const cropped = await sharp(buffer)
+      .extract({ left: x, top: y, width, height })
+      .toBuffer();
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    let image = sharp(buffer).extract({ left: x, top: y, width, height });
-
-    // Set output format
-    if (outputFormat === "jpeg" || outputFormat === "jpg") {
-      image = image.jpeg();
-    } else if (outputFormat === "png") {
-      image = image.png();
-    } else if (outputFormat === "webp") {
-      image = image.webp();
-    } else {
-      return NextResponse.json(
-        { error: "Unsupported output format." },
-        { status: 400 }
-      );
-    }
-
-    const croppedBuffer = await image.toBuffer();
-    const originalFileName = file.name.split(".")[0];
-
-    return new NextResponse(croppedBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": `image/${outputFormat}`,
-        "Content-Disposition": `attachment; filename="cropped-${originalFileName}.${outputFormat}"`,
-      },
-    });
+    const encoded = await encodeImage(cropped, format, 90);
+    return binaryResponse(encoded.buffer, encoded.mime, downloadName(file, "-cropped", encoded.ext));
   } catch (error) {
-    console.error(error);
-    return NextResponse.json(
-      { error: "Failed to crop image." },
-      { status: 500 }
-    );
+    if (error instanceof ImageError) return badRequest(error.message);
+    const extractFailed = error?.message?.includes("extract");
+    if (extractFailed) return badRequest("The crop area is outside the image bounds.");
+    console.error("crop-image error:", error);
+    return serverError("Failed to crop this image.");
   }
 }

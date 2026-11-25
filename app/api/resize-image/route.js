@@ -1,98 +1,68 @@
-import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt, getBool, clampQuality } from "@/lib/server/http";
+import { loadImage, ImageError, resolveOutputFormat, encodeImage } from "@/lib/server/image";
+
+export const runtime = "nodejs";
+
+const MAX_DIMENSION = 12000;
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const file = formData.get("image");
-    const method = formData.get("method");
-    const outputFormat = (formData.get("outputFormat") || "png").toLowerCase();
-    const quality = formData.get("quality")
-      ? parseInt(formData.get("quality"), 10)
-      : 80;
+    const { file, response } = validateUpload(formData, "image", "image");
+    if (response) return response;
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "No image file provided." },
-        { status: 400 }
-      );
-    }
+    const method = String(formData.get("method") || "pixels");
+    const quality = clampQuality(getInt(formData, "quality", 90));
+    const lockAspect = getBool(formData, "lockAspect");
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    let image = sharp(buffer);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { metadata } = await loadImage(buffer);
+    const outputFormat = resolveOutputFormat(formData.get("outputFormat"), metadata.format);
 
-    // Get image dimensions
-    const metadata = await image.metadata();
+    let resizeOptions;
 
-    // Resize by pixels
     if (method === "pixels") {
-      const width = formData.get("width")
-        ? parseInt(formData.get("width"), 10)
-        : null;
-      const height = formData.get("height")
-        ? parseInt(formData.get("height"), 10)
-        : null;
-
-      if ((width !== null && width <= 0) || (height !== null && height <= 0)) {
-        return NextResponse.json(
-          { error: "Invalid width or height." },
-          { status: 400 }
-        );
+      const width = getInt(formData, "width", 0);
+      const height = getInt(formData, "height", 0);
+      if (width < 1 && height < 1) {
+        return badRequest("Please provide a width, a height, or both.");
       }
-
-      image = image.resize(width, height);
-
-      // Resize by percentage
+      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+        return badRequest(`Dimensions cannot exceed ${MAX_DIMENSION}px.`);
+      }
+      resizeOptions = {
+        width: width > 0 ? width : undefined,
+        height: height > 0 ? height : undefined,
+        fit: lockAspect ? "inside" : "fill",
+        withoutEnlargement: false,
+      };
     } else if (method === "percentage") {
-      const percentage = parseInt(formData.get("percentage"), 10);
-
-      if (isNaN(percentage) || percentage <= 0) {
-        return NextResponse.json(
-          { error: "Invalid percentage." },
-          { status: 400 }
-        );
+      const percentage = getInt(formData, "percentage", 0);
+      if (percentage < 1 || percentage > 1000) {
+        return badRequest("Percentage must be between 1 and 1000.");
       }
-
-      const newWidth = Math.round(metadata.width * (percentage / 100));
-      const newHeight = Math.round(metadata.height * (percentage / 100));
-      image = image.resize(newWidth, newHeight);
+      resizeOptions = {
+        width: Math.max(1, Math.round(metadata.width * (percentage / 100))),
+        height: Math.max(1, Math.round(metadata.height * (percentage / 100))),
+        fit: "fill",
+      };
     } else {
-      return NextResponse.json(
-        { error: "Invalid resizing method." },
-        { status: 400 }
-      );
+      return badRequest("Invalid resize method.");
     }
 
-    // Set output format & quality
-    if (outputFormat === "jpeg" || outputFormat === "jpg") {
-      image = image.jpeg({ quality });
-    } else if (outputFormat === "png") {
-      image = image.png();
-    } else if (outputFormat === "webp") {
-      image = image.webp({ quality });
-    } else {
-      return NextResponse.json(
-        { error: "Unsupported output format." },
-        { status: 400 }
-      );
-    }
-
-    const resizedBuffer = await image.toBuffer();
-    const originalFileName = file.name.split(".")[0];
-
-    return new NextResponse(resizedBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": `image/${outputFormat}`,
-        "Content-Disposition": `attachment; filename="resized-${originalFileName}.${outputFormat}"`,
-      },
-    });
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json(
-      { error: "Failed to resize image." },
-      { status: 500 }
+    const resized = await sharp(buffer).resize(resizeOptions).toBuffer();
+    const encoded = await encodeImage(resized, outputFormat, quality);
+    const result = binaryResponse(
+      encoded.buffer,
+      encoded.mime,
+      downloadName(file, "-resized", encoded.ext)
     );
+    result.headers.set("X-Image-Width", String(resizeOptions.width ?? ""));
+    return result;
+  } catch (error) {
+    if (error instanceof ImageError) return badRequest(error.message);
+    console.error("resize-image error:", error);
+    return serverError("Failed to resize this image.");
   }
 }

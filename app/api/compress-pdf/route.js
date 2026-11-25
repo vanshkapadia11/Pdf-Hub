@@ -1,245 +1,200 @@
-import { NextResponse } from "next/server";
-import { PDFDocument, rgb } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
+import { PDFDocument } from "pdf-lib";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt, getFloat, getBool, clampQuality } from "@/lib/server/http";
+import { rasterizeToPdf, PdfError } from "@/lib/server/pdf";
+import { recompressPdfImages } from "@/lib/server/pdf-images";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
+/**
+ * First-line compression: re-encode embedded images and keep text as sharp
+ * vectors. Per compression level (JPEG quality + optional resolution cap).
+ */
+const IMAGE_PRESETS = {
+  low: { quality: 90, maxDimension: null },
+  medium: { quality: 75, maxDimension: null },
+  high: { quality: 60, maxDimension: 1800 },
+  maximum: { quality: 45, maxDimension: 1400 },
+};
+
+/** Fallback: rasterize whole pages (scale + JPEG quality per level). */
+const RASTER_PRESETS = {
+  low: { scale: 1.75, quality: 90 },
+  medium: { scale: 1.5, quality: 75 },
+  high: { scale: 1.25, quality: 60 },
+  maximum: { scale: 1.0, quality: 45 },
+};
+
+/**
+ * Attempts for target-size mode, from best quality to most aggressive.
+ * Image passes first (sharper text), rasterization as the deep fallback.
+ */
+const TARGET_ATTEMPTS = [
+  { image: { quality: 80, maxDimension: null } },
+  { image: { quality: 60, maxDimension: 1800 } },
+  { raster: { scale: 1.25, quality: 55 } },
+  { raster: { scale: 1.0, quality: 45 } },
+  { raster: { scale: 0.85, quality: 40 } },
+  { raster: { scale: 0.75, quality: 40 } },
+  { raster: { scale: 0.65, quality: 32 } },
+];
+
+/** The image pass must save at least 5% to beat the rasterization fallback. */
+const IMAGE_PASS_MIN_RATIO = 0.95;
+
+/**
+ * Runs recompressPdfImages but never lets a parse failure kill the request:
+ * damaged files fall through to the rasterize path, which reports the real
+ * problem; encrypted files rethrow so the route answers with a clear message.
+ */
+async function tryRecompressImages(buffer, options) {
+  try {
+    return await recompressPdfImages(buffer, options);
+  } catch (error) {
+    if (error?.message?.toLowerCase().includes("encrypt")) throw error;
+    return null;
+  }
+}
+
+/** Lossless pass: strip metadata and re-save with object streams. */
+async function losslessOptimize(buffer) {
+  const pdfDoc = await PDFDocument.load(buffer);
+  pdfDoc.setTitle("");
+  pdfDoc.setAuthor("");
+  pdfDoc.setSubject("");
+  pdfDoc.setProducer("PDF Hub");
+  pdfDoc.setCreator("PDF Hub");
+  pdfDoc.setKeywords([]);
+  return pdfDoc.save({ useObjectStreams: true });
+}
+
+/**
+ * Same, but a parse failure turns into the friendly "corrupted" 400 the
+ * other modes already produce (encrypted files rethrow for the route's
+ * password message).
+ */
+async function losslessOptimizeOr400(buffer) {
+  try {
+    return await losslessOptimize(buffer);
+  } catch (error) {
+    if (error?.message?.toLowerCase().includes("encrypt")) throw error;
+    throw new PdfError("This file is not a valid PDF or is corrupted.");
+  }
+}
+
+function imagePassNote(touched, quality, maxDimension) {
+  if (touched === 0) {
+    return "No recompressible embedded images were found, but the internal PDF structure was cleaned up.";
+  }
+  return `Embedded images were re-compressed at ${quality}% quality${
+    maxDimension ? ` and capped at ${maxDimension}px resolution` : ""
+  }, keeping all text as sharp vectors.`;
+}
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const pdfFile = formData.get("pdf");
-    const compressionType = formData.get("compressionType") || "preset";
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!pdfFile) {
-      return NextResponse.json(
-        { error: "Please upload a PDF file" },
-        { status: 400 }
-      );
-    }
+    const compressionType = String(formData.get("compressionType") || "preset");
+    const originalBuffer = Buffer.from(await file.arrayBuffer());
+    const originalSize = originalBuffer.length;
 
-    // Convert file to array buffer
-    const arrayBuffer = await pdfFile.arrayBuffer();
+    let compressed;
+    let note;
 
-    // Load the source PDF
-    const pdfDoc = await PDFDocument.load(arrayBuffer);
-
-    // Register fontkit for better text handling
-    pdfDoc.registerFontkit(fontkit);
-
-    // Set compression options based on type
-    let saveOptions = {};
-    let additionalProcessing = false;
-
-    switch (compressionType) {
-      case "preset":
-        const compressionLevel = formData.get("compressionLevel") || "medium";
-        ({ saveOptions, additionalProcessing } =
-          getPresetOptions(compressionLevel));
-        break;
-
-      case "custom":
-        const customQuality = parseInt(formData.get("customQuality") || "75");
-        const removeMetadata = formData.get("removeMetadata") === "true";
-        const downsampleImages = formData.get("downsampleImages") === "true";
-        ({ saveOptions, additionalProcessing } = getCustomOptions(
-          customQuality,
-          removeMetadata,
-          downsampleImages
-        ));
-        break;
-
-      case "target":
-        const targetSize = parseInt(formData.get("targetSize") || "0");
-        ({ saveOptions, additionalProcessing } = getTargetSizeOptions(
-          targetSize,
-          arrayBuffer.byteLength
-        ));
-        break;
-
-      default:
-        ({ saveOptions, additionalProcessing } = getPresetOptions("medium"));
-    }
-
-    // Apply additional processing if needed
-    if (additionalProcessing) {
-      await applyAdvancedCompression(pdfDoc, compressionType, formData);
-    }
-
-    // Save with compression options
-    const pdfBytes = await pdfDoc.save(saveOptions);
-
-    // Create response with the compressed PDF
-    return new NextResponse(pdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="compressed-${pdfFile.name}"`,
-      },
-    });
-  } catch (error) {
-    console.error("Compression error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
-  }
-}
-
-// Enhanced helper functions
-function getPresetOptions(level) {
-  let saveOptions = {};
-  let additionalProcessing = false;
-
-  switch (level) {
-    case "low":
-      saveOptions = { useObjectStreams: true, compress: false };
-      additionalProcessing = false;
-      break;
-    case "medium":
-      saveOptions = { useObjectStreams: true, compress: true };
-      additionalProcessing = true;
-      break;
-    case "high":
-      saveOptions = {
-        useObjectStreams: true,
-        compress: true,
-        objectsPerTick: 30,
-      };
-      additionalProcessing = true;
-      break;
-    case "maximum":
-      saveOptions = {
-        useObjectStreams: true,
-        compress: true,
-        objectsPerTick: 10,
-      };
-      additionalProcessing = true;
-      break;
-    default:
-      saveOptions = { useObjectStreams: true, compress: true };
-      additionalProcessing = true;
-  }
-
-  return { saveOptions, additionalProcessing };
-}
-
-function getCustomOptions(quality, removeMetadata, downsampleImages) {
-  let objectsPerTick = 100;
-
-  if (quality < 20) objectsPerTick = 10;
-  else if (quality < 40) objectsPerTick = 30;
-  else if (quality < 60) objectsPerTick = 50;
-  else if (quality < 80) objectsPerTick = 100;
-  else objectsPerTick = 200;
-
-  const saveOptions = {
-    useObjectStreams: true,
-    compress: true,
-    objectsPerTick,
-  };
-
-  return {
-    saveOptions,
-    additionalProcessing: removeMetadata || downsampleImages,
-  };
-}
-
-function getTargetSizeOptions(targetSizeMB, originalSizeBytes) {
-  const targetSizeBytes = targetSizeMB * 1024 * 1024;
-  const compressionRatio = Math.min(0.9, targetSizeBytes / originalSizeBytes);
-
-  let objectsPerTick = 100;
-  let additionalProcessing = false;
-
-  if (compressionRatio > 0.8) {
-    objectsPerTick = 200;
-  } else if (compressionRatio > 0.6) {
-    objectsPerTick = 100;
-  } else if (compressionRatio > 0.4) {
-    objectsPerTick = 50;
-    additionalProcessing = true;
-  } else {
-    objectsPerTick = 20;
-    additionalProcessing = true;
-  }
-
-  const saveOptions = {
-    useObjectStreams: true,
-    compress: true,
-    objectsPerTick,
-  };
-
-  return { saveOptions, additionalProcessing };
-}
-
-// Advanced compression techniques
-async function applyAdvancedCompression(pdfDoc, compressionType, formData) {
-  try {
-    const pages = pdfDoc.getPages();
-
-    // For custom compression, apply specific optimizations
     if (compressionType === "custom") {
-      const removeMetadata = formData.get("removeMetadata") === "true";
-      const downsampleImages = formData.get("downsampleImages") === "true";
-
-      if (removeMetadata) {
-        // Remove metadata (simplified approach)
-        pdfDoc.setTitle("Compressed Document");
-        pdfDoc.setAuthor("");
-        pdfDoc.setSubject("");
-        pdfDoc.setKeywords([]);
-        pdfDoc.setCreationDate(new Date());
-        pdfDoc.setModificationDate(new Date());
+      const quality = clampQuality(getInt(formData, "customQuality", 75));
+      const downsample = getBool(formData, "downsampleImages");
+      const maxDimension = downsample ? 1600 : null;
+      const imageResult = await tryRecompressImages(originalBuffer, { quality, maxDimension });
+      if (imageResult && imageResult.bytes.length < originalSize * IMAGE_PASS_MIN_RATIO) {
+        compressed = imageResult.bytes;
+        note = imagePassNote(imageResult.touched, quality, maxDimension);
+      } else {
+        compressed = await rasterizeToPdf(originalBuffer, {
+          scale: downsample ? 1.25 : 1.75,
+          quality,
+        });
+        note = `Pages were re-encoded as images at ${quality}% quality${
+          downsample ? " with reduced resolution" : ""
+        }.`;
       }
-
-      if (downsampleImages && pages.length > 0) {
-        // This is a placeholder - actual image downsampling would require
-        // additional libraries like pdf-lib with image processing capabilities
-        console.log("Image downsampling would be applied here");
+    } else if (compressionType === "target") {
+      const targetMB = getFloat(formData, "targetSize", 1);
+      if (targetMB < 0.05) {
+        return badRequest("Please enter a target size of at least 0.05 MB.");
+      }
+      const targetBytes = targetMB * 1024 * 1024;
+      if (targetBytes >= originalSize) {
+        compressed = await losslessOptimizeOr400(originalBuffer);
+        note = "The file is already smaller than the target size, so only metadata was cleaned up.";
+      } else {
+        note = "Target size could not be reached; the closest achievable size was returned.";
+        for (const attempt of TARGET_ATTEMPTS) {
+          if (attempt.image) {
+            const imageResult = await tryRecompressImages(originalBuffer, attempt.image);
+            compressed = imageResult ? imageResult.bytes : originalBuffer;
+            if (compressed.length <= targetBytes) {
+              note = `Target reached by re-compressing embedded images at ${attempt.image.quality}% quality.`;
+              break;
+            }
+          } else {
+            compressed = await rasterizeToPdf(originalBuffer, attempt.raster);
+            if (compressed.length <= targetBytes) {
+              note = `Target reached by re-encoding pages as images at ${attempt.raster.quality}% quality.`;
+              break;
+            }
+          }
+        }
+      }
+    } else {
+      const level = String(formData.get("compressionLevel") || "medium");
+      const imagePreset = IMAGE_PRESETS[level] || IMAGE_PRESETS.medium;
+      const rasterPreset = RASTER_PRESETS[level] || RASTER_PRESETS.medium;
+      const imageResult = await tryRecompressImages(originalBuffer, imagePreset);
+      if (imageResult && imageResult.bytes.length < originalSize * IMAGE_PASS_MIN_RATIO) {
+        compressed = imageResult.bytes;
+        note = imagePassNote(imageResult.touched, imagePreset.quality, imagePreset.maxDimension);
+      } else {
+        compressed = await rasterizeToPdf(originalBuffer, rasterPreset);
+        note = `Pages were re-encoded as images at ${rasterPreset.quality}% quality to shrink the file.`;
       }
     }
 
-    // For maximum compression or target size, apply more aggressive optimizations
-    if (compressionType === "preset" || compressionType === "target") {
-      const compressionLevel = formData.get("compressionLevel");
-      const targetSize = parseInt(formData.get("targetSize") || "0");
-
-      if (compressionLevel === "maximum" || targetSize > 0) {
-        // Apply more aggressive optimizations for maximum compression
-        optimizeFonts(pdfDoc);
-        optimizeImages(pdfDoc);
+    // Compression can still grow already-optimized files; fall back to a
+    // lossless pass (and finally the untouched original) so output is never
+    // larger than the upload.
+    let finalBuffer = compressed;
+    if (finalBuffer.length >= originalSize) {
+      const lossless = await losslessOptimize(originalBuffer);
+      if (lossless.length < originalSize) {
+        finalBuffer = lossless;
+        note =
+          "This PDF is already efficiently encoded, so only metadata was removed and the internal structure was cleaned up.";
+      } else {
+        finalBuffer = originalBuffer;
+        note = "This PDF is already fully optimized — no further size reduction is possible without visible quality loss.";
       }
     }
-  } catch (error) {
-    console.warn(
-      "Advanced compression techniques could not be applied:",
-      error
+
+    const result = binaryResponse(
+      finalBuffer,
+      "application/pdf",
+      downloadName(file, "-compressed", "pdf")
     );
+    result.headers.set("X-Original-Size", String(originalSize));
+    result.headers.set("X-Compressed-Size", String(finalBuffer.length));
+    result.headers.set("X-Compression-Note", encodeURIComponent(note));
+    return result;
+  } catch (error) {
+    if (error instanceof PdfError) return badRequest(error.message);
+    const encrypted = error?.message?.toLowerCase().includes("encrypt");
+    if (encrypted) {
+      return badRequest("This PDF is password protected. Please remove the password first.");
+    }
+    console.error("compress-pdf error:", error);
+    return serverError();
   }
 }
-
-// Placeholder functions for advanced optimizations
-function optimizeFonts(pdfDoc) {
-  // In a real implementation, this would subset fonts and remove unused glyphs
-  console.log("Font optimization would be applied here");
-}
-
-function optimizeImages(pdfDoc) {
-  // In a real implementation, this would downsample and recompress images
-  console.log("Image optimization would be applied here");
-}
-
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
-}
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};

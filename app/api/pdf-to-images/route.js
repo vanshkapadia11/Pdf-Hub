@@ -1,55 +1,50 @@
-// app/api/pdf-to-images/route.ts
-import { NextResponse } from "next/server";
-import { fromBuffer } from "pdf2pic";
 import JSZip from "jszip";
+import { validateUpload, binaryResponse, badRequest, serverError, getInt, clampQuality } from "@/lib/server/http";
+import { renderPdfPages, PdfError } from "@/lib/server/pdf";
 
-export const POST = async (req) => {
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file");
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    const format = String(formData.get("format") || "jpeg");
+    if (!["jpeg", "png", "webp"].includes(format)) {
+      return badRequest("Invalid image format. Supported formats: JPEG, PNG and WebP.");
+    }
+    const quality = clampQuality(getInt(formData, "quality", 90));
+    const dpi = Math.min(300, Math.max(72, getInt(formData, "dpi", 150)));
+    const scale = dpi / 72;
+
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    let rendered;
+    try {
+      rendered = await renderPdfPages(buffer, { scale, format, quality });
+    } catch (error) {
+      if (error instanceof PdfError) return badRequest(error.message);
+      throw error;
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const pdfBuffer = Buffer.from(arrayBuffer);
+    if (rendered.pages.length === 0) {
+      return badRequest("This PDF has no pages to convert.");
+    }
 
-    // Use pdf2pic to convert the PDF buffer to a list of image buffers
-    const convert = fromBuffer(pdfBuffer, {
-      density: 100, // Image quality (higher is better)
-      saveFilename: "page",
-      format: "jpg",
-      savePath: ".", // No need to save to a file
-    });
-
-    const images = await convert.bulk(-1, { responseType: "buffer" });
     const zip = new JSZip();
+    const ext = format === "jpeg" ? "jpg" : format;
+    for (const page of rendered.pages) {
+      zip.file(`page-${page.pageNumber}.${ext}`, page.buffer);
+    }
+    const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
 
-    // Loop through each image and add it to the zip file
-    images.forEach((imageBuffer, index) => {
-      // Ensure imageBuffer is a Buffer before adding it
-      if (imageBuffer && imageBuffer.buffer) {
-        zip.file(`page-${index + 1}.jpg`, imageBuffer.buffer);
-      }
-    });
-
-    const zipBlob = await zip.generateAsync({ type: "nodebuffer" });
-
-    // Return the zip file as a download
-    const headers = new Headers();
-    headers.set("Content-Type", "application/zip");
-    headers.set(
-      "Content-Disposition",
-      `attachment; filename="converted-images.zip"`
-    );
-
-    return new Response(zipBlob, { headers });
+    const result = binaryResponse(zipBuffer, "application/zip", "pdf-pages.zip");
+    result.headers.set("X-Page-Count", String(rendered.pages.length));
+    return result;
   } catch (error) {
-    console.error("Server error:", error);
-    return NextResponse.json(
-      { error: "Server error: Failed to process PDF." },
-      { status: 500 }
-    );
+    console.error("pdf-to-images error:", error);
+    return serverError();
   }
-};
+}

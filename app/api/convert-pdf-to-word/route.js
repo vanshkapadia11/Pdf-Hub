@@ -1,125 +1,71 @@
-// app/api/convert-pdf-to-word/route.js
-import { NextResponse } from "next/server";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak, AlignmentType } from "docx";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError } from "@/lib/server/http";
+import { extractTextItems, itemsToLines, linesToParagraphs, PdfError } from "@/lib/server/pdf";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const pdfFile = formData.get("pdf");
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!pdfFile) {
-      return NextResponse.json(
-        { error: "Please upload a PDF file" },
-        { status: 400 }
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    let pages;
+    try {
+      pages = linesToParagraphs(itemsToLines(await extractTextItems(buffer)));
+    } catch (error) {
+      if (error instanceof PdfError) return badRequest(error.message);
+      throw error;
+    }
+
+    const totalCharacters = pages.reduce(
+      (sum, page) => sum + page.paragraphs.join("").length,
+      0
+    );
+    if (totalCharacters === 0) {
+      return badRequest(
+        "This PDF does not contain selectable text (it looks like a scanned document), so it cannot be converted to Word."
       );
     }
 
-    // Convert the file to buffer
-    const arrayBuffer = await pdfFile.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const children = [
+      new Paragraph({
+        text: file.name.replace(/\.[^.]+$/, "") || "Converted Document",
+        heading: HeadingLevel.HEADING_1,
+      }),
+    ];
 
-    // Use a simple text extraction approach for demonstration
-    // In production, you might want to use a cloud-based PDF conversion service
-    let extractedText = await extractTextFromPDF(buffer);
+    pages.forEach((page, pageIndex) => {
+      if (pageIndex > 0) {
+        children.push(new Paragraph({ children: [new PageBreak()] }));
+      }
+      page.paragraphs.forEach((text) => {
+        children.push(
+          new Paragraph({
+            alignment: AlignmentType.LEFT,
+            children: [new TextRun({ text, size: 24, font: "Arial" })],
+          })
+        );
+      });
+    });
 
-    // If text extraction fails, fall back to a basic message
-    if (!extractedText || extractedText.trim().length === 0) {
-      extractedText =
-        "This PDF file was successfully converted to Word format.\n\nNote: For more accurate text extraction with complex PDFs, consider using a dedicated PDF conversion service.";
-    }
-
-    // Create Word document
     const doc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: [
-            new Paragraph({
-              text: pdfFile.name.replace(".pdf", ""),
-              heading: HeadingLevel.HEADING_1,
-            }),
-            new Paragraph({ text: "" }),
-            ...extractedText
-              .split("\n")
-              .filter((line) => line.trim().length > 0)
-              .map(
-                (line, index) =>
-                  new Paragraph({
-                    children: [
-                      new TextRun({
-                        text: line.trim(),
-                        // Add some basic formatting for better appearance
-                        size: 24,
-                        font: "Arial",
-                      }),
-                    ],
-                  })
-              ),
-          ],
-        },
-      ],
+      creator: "PDF Hub",
+      title: file.name.replace(/\.[^.]+$/, ""),
+      sections: [{ properties: {}, children }],
     });
 
     const docxBuffer = await Packer.toBuffer(doc);
-
-    return new NextResponse(docxBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${pdfFile.name.replace(
-          ".pdf",
-          ".docx"
-        )}"`,
-      },
-    });
-  } catch (error) {
-    console.error("Conversion error:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to convert PDF to Word. Please try a different file.",
-        details:
-          process.env.NODE_ENV === "development" ? error.message : undefined,
-      },
-      { status: 500 }
+    return binaryResponse(
+      docxBuffer,
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      downloadName(file, "", "docx")
     );
-  }
-}
-
-// Simple text extraction function
-async function extractTextFromPDF(buffer) {
-  try {
-    // For now, use a simple approach - in real implementation, use a proper PDF library
-    // This is a placeholder that attempts basic text extraction
-    const text = buffer.toString("utf8", 0, Math.min(buffer.length, 10000));
-
-    // Extract text-like content (simplified approach)
-    const textMatches = text.match(/[a-zA-Z0-9\s.,!?;:'"()-]{10,}/g);
-
-    if (textMatches && textMatches.length > 0) {
-      return textMatches.join("\n\n");
-    }
-
-    return "PDF content extracted successfully. For complex PDFs with images or special formatting, consider using advanced conversion tools.";
   } catch (error) {
-    console.error("Text extraction error:", error);
-    return "PDF file converted successfully. Text extraction may be limited for this file type.";
+    console.error("convert-pdf-to-word error:", error);
+    return serverError();
   }
 }
-
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
-}
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};

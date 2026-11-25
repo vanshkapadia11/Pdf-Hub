@@ -1,107 +1,81 @@
-import { NextResponse } from "next/server";
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt } from "@/lib/server/http";
+
+export const runtime = "nodejs";
+
+const POSITIONS = [
+  "bottom-center",
+  "bottom-left",
+  "bottom-right",
+  "top-center",
+  "top-left",
+  "top-right",
+];
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const file = formData.get("pdf");
-    const position = formData.get("position");
-    const startPage = parseInt(formData.get("startPage"), 10);
-    const pageFormat = formData.get("pageFormat");
-    const startNumber = parseInt(formData.get("startNumber"), 10);
-    const fontColor = formData.get("fontColor"); // Get the color choice from the frontend
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!file) {
-      return NextResponse.json(
-        { error: "No PDF file provided." },
-        { status: 400 }
-      );
+    const position = String(formData.get("position") || "bottom-center");
+    if (!POSITIONS.includes(position)) {
+      return badRequest("Invalid page number position.");
     }
 
-    if (isNaN(startPage) || startPage < 1) {
-      return NextResponse.json(
-        { error: "Invalid start page number." },
-        { status: 400 }
-      );
-    }
-    if (isNaN(startNumber) || startNumber < 1) {
-      return NextResponse.json(
-        { error: "Invalid start number." },
-        { status: 400 }
-      );
-    }
+    const startPage = getInt(formData, "startPage", 1);
+    const startNumber = getInt(formData, "startNumber", 1);
+    if (startPage < 1) return badRequest("Start page must be 1 or greater.");
+    if (startNumber < 1) return badRequest("Start number must be 1 or greater.");
 
-    const arrayBuffer = await file.arrayBuffer();
-    const pdfDoc = await PDFDocument.load(arrayBuffer);
-    const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const pageFormat = String(formData.get("pageFormat") || "plain");
+    const fontColor = String(formData.get("fontColor") || "black");
+
+    let pdfDoc;
+    try {
+      pdfDoc = await PDFDocument.load(Buffer.from(await file.arrayBuffer()));
+    } catch {
+      return badRequest("This file could not be read as a PDF. It may be corrupted or password protected.");
+    }
 
     const pages = pdfDoc.getPages();
     const totalPages = pages.length;
-    const fontSize = 12;
-    const margin = 30;
-
-    // Set the text color based on the user's choice
-    const textColor = fontColor === "white" ? rgb(1, 1, 1) : rgb(0, 0, 0);
-
-    for (let i = 0; i < totalPages; i++) {
-      const page = pages[i];
-      const { width, height } = page.getSize();
-      const pageNumber = i + 1;
-
-      if (pageNumber < startPage) {
-        continue;
-      }
-
-      let text;
-      const effectivePageNumber = startNumber + (pageNumber - startPage);
-
-      if (pageFormat === "page_of_total") {
-        text = `${effectivePageNumber} of ${
-          startNumber + (totalPages - startPage)
-        }`;
-      } else {
-        text = `${effectivePageNumber}`;
-      }
-
-      const textWidth = helveticaFont.widthOfTextAtSize(text, fontSize);
-      let x, y;
-
-      if (position.includes("top")) {
-        y = height - margin;
-      } else {
-        y = margin;
-      }
-
-      if (position.includes("left")) {
-        x = margin;
-      } else if (position.includes("right")) {
-        x = width - textWidth - margin;
-      } else {
-        x = width / 2 - textWidth / 2;
-      }
-
-      page.drawText(text.toUpperCase(), {
-        x,
-        y,
-        size: fontSize,
-        font: helveticaFont,
-        color: textColor,
-      });
+    if (startPage > totalPages) {
+      return badRequest(`This document only has ${totalPages} page${totalPages === 1 ? "" : "s"}, so numbering cannot start at page ${startPage}.`);
     }
 
-    const pdfBytes = await pdfDoc.save();
-    return new NextResponse(pdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="numbered-${file.name}"`,
-      },
-    });
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const textColor = fontColor === "white" ? rgb(1, 1, 1) : rgb(0.15, 0.15, 0.15);
+    const fontSize = 11;
+    const margin = 28;
+
+    for (let i = 0; i < totalPages; i++) {
+      const pageNumber = i + 1;
+      if (pageNumber < startPage) continue;
+
+      const effectiveNumber = startNumber + (pageNumber - startPage);
+      const lastNumber = startNumber + (totalPages - startPage);
+      const text =
+        pageFormat === "page_of_total" ? `${effectiveNumber} of ${lastNumber}` : `${effectiveNumber}`;
+
+      const page = pages[i];
+      const { width, height } = page.getSize();
+      const textWidth = helvetica.widthOfTextAtSize(text, fontSize);
+
+      let x;
+      if (position.endsWith("left")) x = margin;
+      else if (position.endsWith("right")) x = width - textWidth - margin;
+      else x = width / 2 - textWidth / 2;
+
+      const y = position.startsWith("top") ? height - margin - fontSize : margin;
+
+      page.drawText(text, { x, y, size: fontSize, font: helvetica, color: textColor });
+    }
+
+    const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+    return binaryResponse(pdfBytes, "application/pdf", downloadName(file, "-numbered", "pdf"));
   } catch (error) {
-    console.error("Server-side PDF processing error:", error);
-    return NextResponse.json(
-      { error: "Failed to add page numbers." },
-      { status: 500 }
-    );
+    console.error("add-page-numbers error:", error);
+    return serverError();
   }
 }

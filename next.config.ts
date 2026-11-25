@@ -1,17 +1,26 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  // Your other configurations like 'experimental' go here
-  experimental: {
-    serverComponentsExternalPackages: ["pdf-parse"],
-    serverActions: {
-      bodySizeLimit: "50mb",
-    },
-  },
+import type { NextConfig } from "next";
 
-  // This is the key part to disable ESLint during the build
+const nextConfig: NextConfig = {
+  // Heavy native / ESM-only packages are kept external so they are loaded
+  // with plain Node semantics at runtime instead of being bundled.
+  serverExternalPackages: [
+    "pdfjs-dist",
+    "@napi-rs/canvas",
+    "sharp",
+    "pdf-lib",
+    "docx",
+    "exceljs",
+    "jszip",
+  ],
   eslint: {
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: false,
+  },
+  async redirects() {
+    return [
+      // The dashboard was folded into the home page; keep old links working.
+      { source: "/dashboard", destination: "/", permanent: false },
+    ];
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;

@@ -1,64 +1,41 @@
-import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
+import { binaryResponse, downloadName, badRequest, serverError } from "@/lib/server/http";
+
+export const runtime = "nodejs";
 
 export async function POST(request) {
   try {
     const formData = await request.formData();
-    const pdfFiles = formData.getAll("pdfs");
+    const files = formData.getAll("pdfs").filter((f) => f instanceof File && f.size > 0);
 
-    if (!pdfFiles || pdfFiles.length < 2) {
-      return NextResponse.json(
-        { error: "Please upload at least 2 PDF files" },
-        { status: 400 }
-      );
+    if (files.length < 2) {
+      return badRequest("Please select at least 2 PDF files to merge.");
     }
 
-    // Create a new PDF document
-    const mergedPdf = await PDFDocument.create();
+    const merged = await PDFDocument.create();
+    merged.setProducer("PDF Hub");
+    merged.setCreator("PDF Hub");
 
-    for (const pdfFile of pdfFiles) {
+    for (const file of files) {
       try {
-        // Convert file to array buffer
-        const arrayBuffer = await pdfFile.arrayBuffer();
-
-        // Load the PDF document
-        const pdf = await PDFDocument.load(arrayBuffer);
-
-        // Copy all pages
-        const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
-        pages.forEach((page) => mergedPdf.addPage(page));
+        const bytes = Buffer.from(await file.arrayBuffer());
+        const source = await PDFDocument.load(bytes);
+        const pages = await merged.copyPages(source, source.getPageIndices());
+        pages.forEach((page) => merged.addPage(page));
       } catch (error) {
-        console.error("Error processing file:", pdfFile.name, error);
-        return NextResponse.json(
-          { error: `Invalid PDF file: ${pdfFile.name}` },
-          { status: 400 }
+        const encrypted = error?.message?.toLowerCase().includes("encrypt");
+        return badRequest(
+          encrypted
+            ? `"${file.name}" is password protected. Please remove the password first.`
+            : `"${file.name}" could not be read as a PDF.`
         );
       }
     }
 
-    // Save the merged PDF
-    const mergedPdfBytes = await mergedPdf.save();
-
-    // Create response with PDF
-    return new NextResponse(mergedPdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": 'attachment; filename="merged-document.pdf"',
-      },
-    });
+    const pdfBytes = await merged.save({ useObjectStreams: true });
+    return binaryResponse(pdfBytes, "application/pdf", downloadName(files[0], "-merged", "pdf"));
   } catch (error) {
-    console.error("Merge error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    console.error("merge-pdf error:", error);
+    return serverError();
   }
 }
-
-// Important: Configure Next.js to handle file uploads
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};

@@ -1,101 +1,115 @@
-// ...existing code...
-import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
+import {
+  validateUpload,
+  binaryResponse,
+  downloadName,
+  badRequest,
+  serverError,
+  getInt,
+} from "@/lib/server/http";
+import { loadImage, ImageError } from "@/lib/server/image";
 
-// ...existing code...
+export const runtime = "nodejs";
+
+type TargetFormat = "jpeg" | "png" | "webp";
+
+const MAX_KYC_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+
+async function encodeFor(buffer: Buffer, format: TargetFormat, quality: number): Promise<Buffer> {
+  switch (format) {
+    case "jpeg":
+      return sharp(buffer).jpeg({ quality, mozjpeg: true }).toBuffer();
+    case "webp":
+      return sharp(buffer).webp({ quality }).toBuffer();
+    case "png":
+      return sharp(buffer)
+        .png({ compressionLevel: 9, palette: true, quality })
+        .toBuffer();
+  }
+}
 
 /**
- * Iterative compression helper (same logic as before, adapted for App Router)
+ * Binary-searches an encoding whose size stays under the target.
+ * Returns the best attempt plus whether the target was reached.
  */
-async function iterativeCompress(
-  inputBuffer: Buffer,
-  targetSizeKB: number,
-  format: "jpeg" | "png" | "webp"
-): Promise<Buffer> {
-  const targetSizeBytes = targetSizeKB * 1024;
-  let currentBuffer = inputBuffer;
+async function compressToTarget(
+  buffer: Buffer,
+  format: TargetFormat,
+  targetBytes: number
+): Promise<{ buffer: Buffer; reachedTarget: boolean }> {
+  // If the maximum-quality encode already fits, keep the best quality.
+  const top = await encodeFor(buffer, format, 95);
+  if (top.length <= targetBytes) return { buffer: top, reachedTarget: true };
 
-  if (format === "png") {
-    // Convert to JPEG for lossy compression path
-    currentBuffer = await sharp(inputBuffer).jpeg({ quality: 90 }).toBuffer();
-    if (currentBuffer.length <= targetSizeBytes) return currentBuffer;
-    format = "jpeg";
-  }
+  let low = 5;
+  let high = 95;
+  let best = top;
+  let reached = false;
 
-  let low = 1;
-  let high = 99;
-  let bestBuffer: Buffer = currentBuffer;
-
-  for (let i = 0; i < 7; i++) {
-    if (low > high) break;
+  while (low <= high) {
     const quality = Math.floor((low + high) / 2);
-    const testBuffer = await sharp(inputBuffer).jpeg({ quality }).toBuffer();
-    const size = testBuffer.length;
-    if (size <= targetSizeBytes) {
-      bestBuffer = testBuffer;
-      low = quality + 1;
+    const attempt = await encodeFor(buffer, format, quality);
+    if (attempt.length <= targetBytes) {
+      best = attempt;
+      reached = true;
+      low = quality + 1; // spend the remaining budget on quality
     } else {
       high = quality - 1;
     }
   }
-
-  return bestBuffer;
+  return { buffer: best, reachedTarget: reached };
 }
 
-/**
- * App Router POST handler — reads multipart formData from the Request,
- * converts the uploaded File to Buffer and returns binary image data.
- */
-export async function POST(req: NextRequest) {
+export async function POST(request: Request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("image") as File | null;
-    const targetSizeRaw = formData.get("targetSizeKB")?.toString();
-    const outputFormatRaw = (formData.get("outputFormat")?.toString() ||
-      "jpeg") as "jpeg" | "png" | "webp";
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "image", "image", MAX_KYC_UPLOAD_BYTES);
+    if (response) return response;
 
-    if (!file) {
-      return NextResponse.json(
-        { message: "No image file uploaded." },
-        { status: 400 }
-      );
+    const targetKB = getInt(formData, "targetSizeKB", 100);
+    if (targetKB < 5 || targetKB > 2048) {
+      return badRequest("Target size must be between 5 KB and 2048 KB.");
     }
 
-    const targetKB = parseInt(targetSizeRaw || "0", 10);
-    if (isNaN(targetKB) || targetKB < 1) {
-      return NextResponse.json(
-        { message: "Invalid targetSizeKB." },
-        { status: 400 }
-      );
+    const rawFormat = String(formData.get("outputFormat") || "jpeg").toLowerCase();
+    if (!["jpeg", "png", "webp"].includes(rawFormat)) {
+      return badRequest("Invalid output format. Supported formats: JPEG, PNG and WebP.");
     }
+    const format = rawFormat as TargetFormat;
 
     const buffer = Buffer.from(await file.arrayBuffer());
+    await loadImage(buffer);
 
-    // Run compression (iterativeCompress handles png->jpeg conversion)
-    const compressed = await iterativeCompress(
-      buffer,
-      targetKB,
-      outputFormatRaw === "webp" ? "jpeg" : outputFormatRaw
+    // Flatten transparency: KYC documents need an opaque background.
+    const opaque = await sharp(buffer).flatten({ background: "#ffffff" }).toBuffer();
+
+    const { buffer: compressed, reachedTarget } = await compressToTarget(
+      opaque,
+      format,
+      targetKB * 1024
     );
 
-    // Detect final mime
-    const isJpeg = compressed.toString("hex").startsWith("ffd8");
-    const mime = isJpeg ? "image/jpeg" : "image/png";
-    const ext = isJpeg ? "jpg" : "png";
-
-    return new NextResponse(new Uint8Array(compressed), {
-      status: 200,
-      headers: {
-        "Content-Type": mime,
-        "Content-Disposition": `attachment; filename="optimized-${targetKB}kb.${ext}"`,
-      },
-    });
-  } catch (err) {
-    console.error("KYC Compressor (App Router) Error:", err);
-    return NextResponse.json(
-      { message: "Internal Server Error during image optimization." },
-      { status: 500 }
+    const mime = format === "jpeg" ? "image/jpeg" : `image/${format}`;
+    const ext = format === "jpeg" ? "jpg" : format;
+    const result = binaryResponse(
+      compressed,
+      mime,
+      downloadName(file, `-${targetKB}kb`, ext)
     );
+    result.headers.set("X-Original-Size", String(buffer.length));
+    result.headers.set("X-Compressed-Size", String(compressed.length));
+    if (!reachedTarget) {
+      result.headers.set(
+        "X-Compression-Note",
+        encodeURIComponent(
+          "This image cannot be compressed to the requested size without becoming unusable; the closest achievable size was returned."
+        )
+      );
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof ImageError) return badRequest(error.message);
+    console.error("kyc-compressor error:", error);
+    return serverError("Failed to optimize this image.");
   }
 }
-// ...existing code...

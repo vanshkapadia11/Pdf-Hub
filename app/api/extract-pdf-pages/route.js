@@ -1,82 +1,52 @@
-import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError } from "@/lib/server/http";
+import { parsePageSelection } from "@/lib/server/page-selection";
 
 export const runtime = "nodejs";
 
-// Helper function to parse page numbers and ranges to keep
-function parsePagesToKeep(pageString) {
-  const pages = new Set();
-  const parts = pageString.split(",").map((part) => part.trim());
-
-  for (const part of parts) {
-    if (part.includes("-")) {
-      const [start, end] = part.split("-").map(Number);
-      if (isNaN(start) || isNaN(end) || start > end) {
-        throw new Error("Invalid page range format.");
-      }
-      for (let i = start; i <= end; i++) {
-        pages.add(i);
-      }
-    } else {
-      const pageNum = Number(part);
-      if (isNaN(pageNum) || pageNum <= 0) {
-        throw new Error("Invalid page number format.");
-      }
-      pages.add(pageNum);
-    }
-  }
-  return pages;
-}
-
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const pdfFile = formData.get("pdf");
-    const pagesToKeepStr = formData.get("pagesToKeep");
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!pdfFile || !pagesToKeepStr) {
-      return NextResponse.json(
-        { error: "PDF file and pages to extract are required." },
-        { status: 400 }
-      );
+    const pagesToKeepStr = formData.get("pagesToKeep");
+    if (typeof pagesToKeepStr !== "string" || !pagesToKeepStr.trim()) {
+      return badRequest("Please specify which pages to extract (e.g. 2 or 1-3,5).");
     }
 
-    const pagesToKeep = parsePagesToKeep(pagesToKeepStr);
-    const pdfBytes = Buffer.from(await pdfFile.arrayBuffer());
+    let pagesToKeep;
+    try {
+      pagesToKeep = parsePageSelection(pagesToKeepStr);
+    } catch (error) {
+      return badRequest(error.message);
+    }
 
-    const originalPdfDoc = await PDFDocument.load(pdfBytes);
-    const newPdfDoc = await PDFDocument.create();
+    let sourcePdf;
+    try {
+      sourcePdf = await PDFDocument.load(Buffer.from(await file.arrayBuffer()));
+    } catch {
+      return badRequest("This file could not be read as a PDF. It may be corrupted or password protected.");
+    }
+    const pageCount = sourcePdf.getPageCount();
 
-    const originalPageIndices = originalPdfDoc.getPages().map((_, i) => i);
-    const indicesToKeep = originalPageIndices.filter((index) =>
-      pagesToKeep.has(index + 1)
-    );
+    const indicesToKeep = [];
+    for (let i = 0; i < pageCount; i++) {
+      if (pagesToKeep.has(i + 1)) indicesToKeep.push(i);
+    }
 
     if (indicesToKeep.length === 0) {
-      return NextResponse.json(
-        { error: "No valid pages were selected for extraction." },
-        { status: 400 }
-      );
+      return badRequest(`None of the selected pages exist in this ${pageCount}-page document.`);
     }
 
-    const copiedPages = await newPdfDoc.copyPages(
-      originalPdfDoc,
-      indicesToKeep
-    );
+    const newPdfDoc = await PDFDocument.create();
+    const copiedPages = await newPdfDoc.copyPages(sourcePdf, indicesToKeep);
     copiedPages.forEach((page) => newPdfDoc.addPage(page));
 
-    const extractedPdfBytes = await newPdfDoc.save();
-
-    return new Response(extractedPdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": "attachment; filename=extracted.pdf",
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    const errorMessage = err.message || "Failed to extract pages from PDF";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const pdfBytes = await newPdfDoc.save({ useObjectStreams: true });
+    return binaryResponse(pdfBytes, "application/pdf", downloadName(file, "-extracted", "pdf"));
+  } catch (error) {
+    console.error("extract-pdf-pages error:", error);
+    return serverError();
   }
 }

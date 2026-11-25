@@ -1,74 +1,40 @@
-import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getFloat } from "@/lib/server/http";
+import { loadImage, ImageError, resolveOutputFormat, encodeImage } from "@/lib/server/image";
 
-export async function POST(req) {
+export const runtime = "nodejs";
+
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("image");
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "image", "image");
+    if (response) return response;
 
-    const brightness = parseFloat(formData.get("brightness")) || 1; // default 1
-    const contrast = parseFloat(formData.get("contrast")) || 1; // default 1
-    const saturate = parseFloat(formData.get("saturate")) || 1; // default 1
+    // getFloat keeps legitimately-sent 0 values working.
+    const brightness = getFloat(formData, "brightness", 1);
+    const contrast = getFloat(formData, "contrast", 1);
+    const saturate = getFloat(formData, "saturate", 1);
 
-    if (!file || !(file instanceof Blob)) {
-      return NextResponse.json({ error: "No image uploaded" }, { status: 400 });
+    for (const [name, value] of [["brightness", brightness], ["contrast", contrast], ["saturate", saturate]]) {
+      if (value < 0 || value > 3) {
+        return badRequest(`${name} must be between 0 and 3.`);
+      }
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { metadata } = await loadImage(buffer);
+    const outputFormat = resolveOutputFormat("auto", metadata.format);
 
-    // Convert to Sharp instance
-    let image = sharp(inputBuffer);
+    const processed = await sharp(buffer)
+      .modulate({ brightness, saturation: saturate })
+      .linear(contrast, -(128 * (contrast - 1)))
+      .toBuffer();
 
-    // Apply filters using modulate
-    image = image
-      .modulate({
-        brightness, // 1 = original
-        saturation: saturate, // 1 = original
-        // contrast adjustment using linear
-      })
-      .linear(contrast, -(128 * (contrast - 1))); // approximate contrast
-
-    const metadata = await image.metadata();
-    let outputBuffer;
-    let mimeType;
-
-    switch (metadata.format) {
-      case "jpeg":
-      case "jpg":
-        outputBuffer = await image.jpeg({ mozjpeg: true }).toBuffer();
-        mimeType = "image/jpeg";
-        break;
-      case "png":
-        outputBuffer = await image.png({ compressionLevel: 9 }).toBuffer();
-        mimeType = "image/png";
-        break;
-      case "webp":
-        outputBuffer = await image.webp().toBuffer();
-        mimeType = "image/webp";
-        break;
-      default:
-        return NextResponse.json(
-          {
-            error:
-              "Unsupported image format. Only JPEG, PNG, WebP are supported.",
-          },
-          { status: 400 }
-        );
-    }
-
-    return new Response(outputBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": mimeType,
-        "Content-Disposition": `attachment; filename=filtered.${metadata.format}`,
-      },
-    });
+    const encoded = await encodeImage(processed, outputFormat, 90);
+    return binaryResponse(encoded.buffer, encoded.mime, downloadName(file, "-filtered", encoded.ext));
   } catch (error) {
-    console.error(error);
-    return NextResponse.json(
-      { error: "Failed to apply filters" },
-      { status: 500 }
-    );
+    if (error instanceof ImageError) return badRequest(error.message);
+    console.error("add-filters error:", error);
+    return serverError("Failed to apply filters to this image.");
   }
 }

@@ -1,19 +1,40 @@
 import type { Metadata } from "next";
 import { Poppins } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
-import LoadingBar from "@/components/LoadingBar";
-import { Analytics } from "@vercel/analytics/next";
-import { SpeedInsights } from "@vercel/speed-insights/next";
+import LoadingBar from "@/components/site/LoadingBar";
 
 const poppinsSans = Poppins({
   variable: "--font-poppins",
   subsets: ["latin"],
-  weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+  weight: ["300", "400", "500", "600", "700", "800"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "PDF Hub",
-  description: "npm i @vercel/speed-insights ",
+  title: {
+    default: "PDF Hub — Free Online PDF & Image Tools",
+    template: "%s | PDF Hub",
+  },
+  description:
+    "Merge, split, compress and convert PDFs, plus a full image toolkit — fast, free and privacy-friendly. No sign-up, no watermarks.",
+  keywords: [
+    "PDF tools",
+    "merge PDF",
+    "split PDF",
+    "compress PDF",
+    "PDF to Word",
+    "PDF to Excel",
+    "image compressor",
+    "KYC image compressor",
+    "passport photo maker",
+  ],
+  openGraph: {
+    title: "PDF Hub — Free Online PDF & Image Tools",
+    description:
+      "Every document tool you need in one place. Free, fast and private.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
@@ -23,31 +44,17 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <script
-        async
-        src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
-        crossOrigin="anonymous"
-      ></script>
-
-      <body className={` ${poppinsSans.className} antialiased`}>
+      <body className={`${poppinsSans.variable} font-sans antialiased`}>
+        {/* Google AdSense (kept from the original deployment configuration). */}
+        <Script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
+          crossOrigin="anonymous"
+          strategy="afterInteractive"
+        />
         <LoadingBar />
-        <Analytics />
-        <SpeedInsights />
         {children}
       </body>
     </html>
   );
-}
-
-// google.com, pub - 1052528326679360, DIRECT, f08c47fec0942fa0;
-{
-  /* <meta name="google-adsense-account" content="ca-pub-1052528326679360"></meta> */
-}
-
-{
-  /* <script
-  async
-  src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1052528326679360"
-  crossorigin="anonymous"
-></script>; */
 }

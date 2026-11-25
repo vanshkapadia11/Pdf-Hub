@@ -1,73 +1,52 @@
-import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError } from "@/lib/server/http";
+import { parsePageSelection } from "@/lib/server/page-selection";
 
 export const runtime = "nodejs";
 
-// Helper function to parse page numbers and ranges
-function parsePagesToRemove(pageString) {
-  const pages = new Set();
-  const parts = pageString.split(",").map((part) => part.trim());
-
-  for (const part of parts) {
-    if (part.includes("-")) {
-      const [start, end] = part.split("-").map(Number);
-      if (isNaN(start) || isNaN(end) || start > end) {
-        throw new Error("Invalid page range format.");
-      }
-      for (let i = start; i <= end; i++) {
-        pages.add(i);
-      }
-    } else {
-      const pageNum = Number(part);
-      if (isNaN(pageNum) || pageNum <= 0) {
-        throw new Error("Invalid page number format.");
-      }
-      pages.add(pageNum);
-    }
-  }
-  return pages;
-}
-
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const pdfFile = formData.get("pdf");
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
+
     const pagesToRemoveStr = formData.get("pagesToRemove");
-
-    if (!pdfFile || !pagesToRemoveStr) {
-      return NextResponse.json(
-        { error: "PDF file and pages to remove are required." },
-        { status: 400 }
-      );
+    if (typeof pagesToRemoveStr !== "string" || !pagesToRemoveStr.trim()) {
+      return badRequest("Please specify which pages to remove (e.g. 2 or 1-3,5).");
     }
 
-    const pagesToRemove = parsePagesToRemove(pagesToRemoveStr);
-    const pdfBytes = Buffer.from(await pdfFile.arrayBuffer());
+    let pagesToRemove;
+    try {
+      pagesToRemove = parsePageSelection(pagesToRemoveStr);
+    } catch (error) {
+      return badRequest(error.message);
+    }
 
-    const originalPdfDoc = await PDFDocument.load(pdfBytes);
+    let sourcePdf;
+    try {
+      sourcePdf = await PDFDocument.load(Buffer.from(await file.arrayBuffer()));
+    } catch {
+      return badRequest("This file could not be read as a PDF. It may be corrupted or password protected.");
+    }
+    const pageCount = sourcePdf.getPageCount();
+
+    if (pagesToRemove.size >= pageCount) {
+      return badRequest("You cannot remove every page — at least one page must remain.");
+    }
+
+    const kept = [];
+    for (let i = 0; i < pageCount; i++) {
+      if (!pagesToRemove.has(i + 1)) kept.push(i);
+    }
+
     const newPdfDoc = await PDFDocument.create();
+    const copiedPages = await newPdfDoc.copyPages(sourcePdf, kept);
+    copiedPages.forEach((page) => newPdfDoc.addPage(page));
 
-    const originalPages = originalPdfDoc.getPages();
-    for (let i = 0; i < originalPages.length; i++) {
-      const pageNumber = i + 1;
-      if (!pagesToRemove.has(pageNumber)) {
-        const [copiedPage] = await newPdfDoc.copyPages(originalPdfDoc, [i]);
-        newPdfDoc.addPage(copiedPage);
-      }
-    }
-
-    const modifiedPdfBytes = await newPdfDoc.save();
-
-    return new Response(modifiedPdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": "attachment; filename=modified.pdf",
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    const errorMessage = err.message || "Failed to remove pages from PDF";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const pdfBytes = await newPdfDoc.save({ useObjectStreams: true });
+    return binaryResponse(pdfBytes, "application/pdf", downloadName(file, "-pages-removed", "pdf"));
+  } catch (error) {
+    console.error("remove-pdf-pages error:", error);
+    return serverError();
   }
 }

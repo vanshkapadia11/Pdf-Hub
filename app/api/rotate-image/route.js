@@ -1,79 +1,41 @@
-// app/api/rotate-flip-image/route.js
-import { NextResponse } from "next/server";
 import sharp from "sharp";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError, getInt, getBool } from "@/lib/server/http";
+import { loadImage, ImageError, resolveOutputFormat, encodeImage } from "@/lib/server/image";
 
-export async function POST(req) {
+export const runtime = "nodejs";
+
+const ALLOWED_ROTATIONS = [0, 90, 180, 270];
+
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("image");
-    const rotate = parseInt(formData.get("rotate")) || 0;
-    const flipH = formData.get("flipH") === "true";
-    const flipV = formData.get("flipV") === "true";
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "image", "image");
+    if (response) return response;
 
-    if (!file || !(file instanceof Blob)) {
-      return NextResponse.json({ error: "No image uploaded" }, { status: 400 });
+    const rotate = getInt(formData, "rotate", 0);
+    const flipH = getBool(formData, "flipH");
+    const flipV = getBool(formData, "flipV");
+
+    if (!ALLOWED_ROTATIONS.includes(rotate)) {
+      return badRequest("Rotation must be 0, 90, 180 or 270 degrees.");
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { metadata } = await loadImage(buffer);
+    const outputFormat = resolveOutputFormat("auto", metadata.format);
 
-    let image = sharp(inputBuffer);
+    let pipeline = sharp(buffer);
+    if (rotate !== 0) pipeline = pipeline.rotate(rotate);
+    // sharp: flop() mirrors horizontally, flip() mirrors vertically.
+    if (flipH) pipeline = pipeline.flop();
+    if (flipV) pipeline = pipeline.flip();
 
-    // Apply rotation
-    if ([0, 90, 180, 270].includes(rotate)) {
-      image = image.rotate(rotate);
-    } else {
-      return NextResponse.json(
-        { error: "Invalid rotation value" },
-        { status: 400 }
-      );
-    }
-
-    // Apply flipping
-    if (flipH) image = image.flip(); // vertical flip in Sharp
-    if (flipV) image = image.flop(); // horizontal flip in Sharp
-
-    const metadata = await image.metadata();
-    let outputBuffer;
-    let mimeType;
-
-    // Determine output format based on input
-    switch (metadata.format) {
-      case "jpeg":
-      case "jpg":
-        outputBuffer = await image.jpeg({ mozjpeg: true }).toBuffer();
-        mimeType = "image/jpeg";
-        break;
-      case "png":
-        outputBuffer = await image.png({ compressionLevel: 9 }).toBuffer();
-        mimeType = "image/png";
-        break;
-      case "webp":
-        outputBuffer = await image.webp().toBuffer();
-        mimeType = "image/webp";
-        break;
-      default:
-        return NextResponse.json(
-          {
-            error:
-              "Unsupported image format. Only JPEG, PNG, WebP are supported.",
-          },
-          { status: 400 }
-        );
-    }
-
-    return new Response(outputBuffer, {
-      status: 200,
-      headers: {
-        "Content-Type": mimeType,
-        "Content-Disposition": `attachment; filename=rotated-flipped.${metadata.format}`,
-      },
-    });
+    const processed = await pipeline.toBuffer();
+    const encoded = await encodeImage(processed, outputFormat, 95);
+    return binaryResponse(encoded.buffer, encoded.mime, downloadName(file, "-rotated", encoded.ext));
   } catch (error) {
-    console.error(error);
-    return NextResponse.json(
-      { error: "Failed to rotate/flip image" },
-      { status: 500 }
-    );
+    if (error instanceof ImageError) return badRequest(error.message);
+    console.error("rotate-image error:", error);
+    return serverError("Failed to rotate this image.");
   }
 }

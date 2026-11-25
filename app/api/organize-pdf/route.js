@@ -1,81 +1,61 @@
-import { NextResponse } from "next/server";
 import { PDFDocument } from "pdf-lib";
+import { validateUpload, binaryResponse, downloadName, badRequest, serverError } from "@/lib/server/http";
 
 export const runtime = "nodejs";
 
-// Helper function to parse the new page order string
-function parsePageOrder(orderString) {
-  const pages = orderString.split(",").map((part) => Number(part.trim()));
-  if (pages.some(isNaN) || pages.some((num) => num <= 0)) {
-    throw new Error(
-      "Invalid page order format. Please use comma-separated numbers (e.g., 3, 1, 2)."
-    );
-  }
-  return pages;
-}
-
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const formData = await req.formData();
-    const pdfFile = formData.get("pdf");
-    const newOrderStr = formData.get("newOrder");
+    const formData = await request.formData();
+    const { file, response } = validateUpload(formData, "pdf", "PDF file");
+    if (response) return response;
 
-    if (!pdfFile || !newOrderStr) {
-      return NextResponse.json(
-        { error: "PDF file and new page order are required." },
-        { status: 400 }
-      );
+    const newOrderStr = formData.get("newOrder");
+    if (typeof newOrderStr !== "string" || !newOrderStr.trim()) {
+      return badRequest("No page order provided. Reorder the pages and try again.");
     }
 
-    const newOrder = parsePageOrder(newOrderStr);
-    const pdfBytes = Buffer.from(await pdfFile.arrayBuffer());
+    const newOrder = newOrderStr
+      .split(",")
+      .map((part) => Number(part.trim()))
+      .filter((n) => Number.isInteger(n));
 
-    const originalPdfDoc = await PDFDocument.load(pdfBytes);
-    const numOriginalPages = originalPdfDoc.getPages().length;
+    if (newOrder.length === 0) {
+      return badRequest("Invalid page order. Please use comma-separated page numbers (e.g. 3,1,2).");
+    }
 
-    // Validate that all pages exist in the new order and there are no duplicates
-    const originalPagesSet = new Set(
-      Array.from({ length: numOriginalPages }, (_, i) => i + 1)
-    );
-    const newOrderSet = new Set(newOrder);
+    let sourcePdf;
+    try {
+      sourcePdf = await PDFDocument.load(Buffer.from(await file.arrayBuffer()));
+    } catch {
+      return badRequest("This file could not be read as a PDF. It may be corrupted or password protected.");
+    }
+    const pageCount = sourcePdf.getPageCount();
 
-    if (
-      newOrder.length !== numOriginalPages ||
-      newOrderSet.size !== numOriginalPages ||
-      !Array.from(newOrderSet).every((page) => originalPagesSet.has(page))
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "The page order is invalid. Please ensure all original pages are listed exactly once.",
-        },
-        { status: 400 }
-      );
+    // The new order is a subset of the original pages: every listed page
+    // must exist and appear at most once. Pages left out are deleted.
+    const seen = new Set();
+    for (const pageNumber of newOrder) {
+      if (pageNumber < 1 || pageNumber > pageCount) {
+        return badRequest(`Page ${pageNumber} does not exist in this ${pageCount}-page document.`);
+      }
+      if (seen.has(pageNumber)) {
+        return badRequest(`Page ${pageNumber} appears more than once in the new order.`);
+      }
+      seen.add(pageNumber);
+    }
+    if (newOrder.length === 0) {
+      return badRequest("At least one page must remain in the document.");
     }
 
     const newPdfDoc = await PDFDocument.create();
+    const indices = newOrder.map((pageNumber) => pageNumber - 1);
+    const copiedPages = await newPdfDoc.copyPages(sourcePdf, indices);
+    copiedPages.forEach((page) => newPdfDoc.addPage(page));
 
-    // Copy pages into the new document in the specified order
-    for (const pageNum of newOrder) {
-      const pageIndex = pageNum - 1;
-      const [copiedPage] = await newPdfDoc.copyPages(originalPdfDoc, [
-        pageIndex,
-      ]);
-      newPdfDoc.addPage(copiedPage);
-    }
-
-    const reorganizedPdfBytes = await newPdfDoc.save();
-
-    return new Response(reorganizedPdfBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": "attachment; filename=organized.pdf",
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    const errorMessage = err.message || "Failed to organize PDF pages.";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const pdfBytes = await newPdfDoc.save({ useObjectStreams: true });
+    return binaryResponse(pdfBytes, "application/pdf", downloadName(file, "-organized", "pdf"));
+  } catch (error) {
+    console.error("organize-pdf error:", error);
+    return serverError();
   }
 }
